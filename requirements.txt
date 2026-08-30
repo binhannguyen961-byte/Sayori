@@ -1,5 +1,5 @@
-discord.py
+discord.py[voice]
 yt-dlp
 flask
 google-genai
-PyNaCl
+pynacl
