@@ -3,3 +3,4 @@ yt-dlp
 flask
 google-genai
 pynacl
+imageio-ffmpeg
