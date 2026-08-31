@@ -255,30 +255,32 @@ def play_next(ctx):
   loop = sayori_bot.loop
 
   if guild_id in music_queues and music_queues[guild_id]:
-    next_track_data = music_queues[guild_id].pop(0)
+    next_item = music_queues[guild_id].pop(0)
 
-    try:
-      if isinstance(next_track_data, dict):
-        if not next_track_data.get('url'):
-          target = next_track_data.get('webpage_url') or next_track_data.get(
-              'url'
+    async def process_and_play():
+      try:
+        # Bóc tách lại Stream URL chuẩn nếu item là dict từ playlist
+        if isinstance(next_item, dict):
+          target_url = next_item.get('webpage_url') or next_item.get('url')
+          full_data = await loop.run_in_executor(
+              None, lambda: ytdl.extract_info(target_url, download=False)
           )
-          next_track_data = ytdl.extract_info(target, download=False)
-        next_source = YTDLSource.from_data(next_track_data)
-      else:
-        next_source = next_track_data
+          next_source = YTDLSource.from_data(full_data)
+        else:
+          next_source = next_item
 
-      last_played_track[guild_id] = next_source
-      ctx.voice_client.play(next_source, after=lambda e: play_next(ctx))
+        last_played_track[guild_id] = next_source
+        ctx.voice_client.play(next_source, after=lambda e: play_next(ctx))
 
-      coro = ctx.send(
-          '☁️ *nhún nhảy theo SoundCloud* Đang phát bài tiếp theo:'
-          f' **{next_source.title}** - `{next_source.uploader}` 🎶'
-      )
-      asyncio.run_coroutine_threadsafe(coro, loop)
-    except Exception as e:
-      print(f'Lỗi phát bài tiếp theo: {e}')
-      play_next(ctx)
+        await ctx.send(
+            '☁️ *nhún nhảy theo SoundCloud* Đang phát bài tiếp theo:'
+            f' **{next_source.title}** - `{next_source.uploader}` 🎶'
+        )
+      except Exception as e:
+        print(f'Lỗi phát bài tiếp theo: {e}')
+        play_next(ctx)
+
+    asyncio.run_coroutine_threadsafe(process_and_play(), loop)
 
   elif autoplay_status.get(guild_id, True) and guild_id in last_played_track:
     last_track = last_played_track[guild_id]
@@ -374,17 +376,8 @@ async def play_music(ctx, *, search: str):
               '*bĩu môi* Playlist này không tìm thấy bài hát nào cả cậu ơi...'
           )
 
-        first_entry = entries[0]
-        first_url = first_entry.get('webpage_url') or first_entry.get('url')
-
-        # Trích xuất URL stream thực tế cho bài hát đầu tiên
-        first_track_data = await sayori_bot.loop.run_in_executor(
-            None, lambda: ytdl.extract_info(first_url, download=False)
-        )
-
-        first_track = YTDLSource.from_data(first_track_data)
-
-        for entry in entries[1:]:
+        # Đưa toàn bộ danh sách bài vào hàng chờ
+        for entry in entries:
           music_queues[guild_id].append(entry)
 
         await ctx.send(
@@ -392,13 +385,9 @@ async def play_music(ctx, *, search: str):
             f' **{len(entries)}** bài vào danh sách chờ!'
         )
 
+        # Nếu chưa phát nhạc thì kích hoạt phát bài đầu tiên trong hàng chờ
         if not ctx.voice_client.is_playing():
-          last_played_track[guild_id] = first_track
-          ctx.voice_client.play(first_track, after=lambda e: play_next(ctx))
-          await ctx.send(
-              f'🎶 *Đang phát bài đầu tiên:* **{first_track.title}** -'
-              f' `{first_track.uploader}` ☀️'
-          )
+          play_next(ctx)
 
       # Trường hợp Single Track
       else:
@@ -408,16 +397,15 @@ async def play_music(ctx, *, search: str):
             else data
         )
 
-        if not track_data.get('url'):
-          target_url = track_data.get('webpage_url') or track_data.get('url')
-          track_data = await sayori_bot.loop.run_in_executor(
-              None, lambda: ytdl.extract_info(target_url, download=False)
-          )
+        target_url = track_data.get('webpage_url') or track_data.get('url')
+        full_track_data = await sayori_bot.loop.run_in_executor(
+            None, lambda: ytdl.extract_info(target_url, download=False)
+        )
 
-        track = YTDLSource.from_data(track_data)
+        track = YTDLSource.from_data(full_track_data)
 
         if ctx.voice_client.is_playing():
-          music_queues[guild_id].append(track_data)
+          music_queues[guild_id].append(full_track_data)
           await ctx.send(
               f'☁️ *Đã thêm vào danh sách chờ:* **{track.title}** -'
               f' `{track.uploader}`'
