@@ -25,7 +25,7 @@ def run_flask():
   app.run(host='0.0.0.0', port=port)
 
 
-# --- 2. Cấu hình Google GenAI SDK (Sayori AI - Hỗ trợ nhiều API Key) ---
+# --- 2. Cấu hình Google GenAI SDK ---
 API_KEYS = []
 for env_name, env_val in os.environ.items():
   if ('GEMINI' in env_name or 'KEY' in env_name) and 'DISCORD' not in env_name:
@@ -87,18 +87,18 @@ async def ask_sayori(prompt):
   )
 
 
-# --- 3. Cấu hình Discord Bot Sayori & Engine Âm Thanh ---
+# --- 3. Cấu hình Discord Bot & Engine Âm Thanh ---
 intents = discord.Intents.default()
 intents.message_content = True
 sayori_bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Tự động nạp thư viện Opus mã hóa Voice
 if not discord.opus.is_loaded():
   try:
     discord.opus.load_opus('libopus.so.0')
   except Exception as e:
     print(f'Lỗi nạp Opus driver: {e}')
 
+# Giả lập Header để chống chặn IP trên Render
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -112,9 +112,16 @@ YTDL_OPTIONS = {
     'quiet': True,
     'no_warnings': True,
     'source_address': '0.0.0.0',
+    'http_headers': {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            ' (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        ),
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.5',
+    },
 }
 
-# Tối ưu hóa FFmpeg để chống giật lag / câm tiếng do CDN SoundCloud ngắt kết nối
 FFMPEG_OPTIONS = {
     'before_options': (
         '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
@@ -131,21 +138,23 @@ autoplay_status = {}
 
 
 def resolve_soundcloud_url(url: str) -> str:
-  """Giải mã link rút gọn on.soundcloud.com với timeout tránh treo bot"""
+  """Giải mã link rút gọn on.soundcloud.com một cách chính xác nhất"""
   url = url.strip()
-  if 'on.soundcloud.com' in url:
+  if 'on.soundcloud.com' in url or 'soundcloud.app.goo.gl' in url:
     try:
       req = urllib.request.Request(
           url,
           headers={
               'User-Agent': (
                   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                  ' (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                  ' (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
               )
           },
       )
-      with urllib.request.urlopen(req, timeout=5) as res:
-        return res.geturl()
+      with urllib.request.urlopen(req, timeout=10) as res:
+        final_url = res.geturl()
+        # Loại bỏ tham số rác đằng sau url
+        return final_url.split('?')[0] if '?' in final_url else final_url
     except Exception as e:
       print(f'Lỗi resolve URL: {e}')
   return url
@@ -374,9 +383,12 @@ async def play_music(ctx, *, search: str):
       )
 
     try:
-      # Trường hợp Playlist
-      if 'entries' in data and data['entries']:
-        entries = [e for e in data['entries'] if e]
+      # Xử lý trường hợp nhận về dạng playlist có danh sách bài
+      if (
+          '_type' in data and data['_type'] == 'playlist'
+      ) or 'entries' in data:
+        raw_entries = data.get('entries', [])
+        entries = [e for e in raw_entries if e]
         playlist_title = data.get('title', 'SoundCloud Playlist')
 
         if not entries:
@@ -395,15 +407,9 @@ async def play_music(ctx, *, search: str):
         if not ctx.voice_client.is_playing():
           play_next(ctx)
 
-      # Trường hợp Single Track
+      # Xử lý trường hợp 1 bài lẻ
       else:
-        track_data = (
-            data['entries'][0]
-            if ('entries' in data and data['entries'])
-            else data
-        )
-
-        target_url = track_data.get('webpage_url') or track_data.get('url')
+        target_url = data.get('webpage_url') or data.get('url')
         full_track_data = await sayori_bot.loop.run_in_executor(
             None, lambda: ytdl.extract_info(target_url, download=False)
         )
