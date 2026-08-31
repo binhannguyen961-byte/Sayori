@@ -4,4 +4,3 @@ yt-dlp>=2024.08.01
 imageio-ffmpeg
 Flask
 aiohttp
-opus-loader
