@@ -105,11 +105,6 @@ YTDL_OPTIONS = {
     }
 }
 
-FFMPEG_OPTIONS = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 10000000 -analyzeduration 15000000',
-    'options': '-vn -loglevel error'
-}
-
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
 music_queues = {}
@@ -146,7 +141,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         stream_url = data.get('url')
         if not stream_url and 'formats' in data:
             for fmt in reversed(data['formats']):
-                if fmt.get('url'):
+                if fmt.get('url') and fmt.get('acodec') != 'none':
                     stream_url = fmt['url']
                     break
 
@@ -155,26 +150,33 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
         data['url'] = stream_url
         ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
-        return cls(discord.FFmpegPCMAudio(stream_url, executable=ffmpeg_bin, **FFMPEG_OPTIONS), data=data)
+        ffmpeg_options = {
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn'
+        }
+        return cls(discord.FFmpegPCMAudio(stream_url, executable=ffmpeg_bin, **ffmpeg_options), data=data)
 
     @classmethod
     async def fetch_info(cls, query, loop=None):
         loop = loop or asyncio.get_event_loop()
         query = query.strip()
         
-        # 1. Direct SoundCloud
+        def extract(target_query):
+            return ytdl.extract_info(target_query, download=False)
+
+        # 1. Direct SoundCloud Link
         if query.startswith('http://') or query.startswith('https://'):
             target_url = await expand_url(query)
             try:
-                data = await loop.run_in_executor(None, lambda: ytdl.extract_info(target_url, download=False))
-                if data and (data.get('url') or data.get('entries') or 'formats' in data):
+                data = await loop.run_in_executor(None, lambda: extract(target_url))
+                if data:
                     return data
             except Exception as e:
                 print(f"Lỗi direct SoundCloud extract: {e}")
 
-        # 2. Fallback scsearch SoundCloud
+        # 2. Fallback SoundCloud search
         try:
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"scsearch1:{query}", download=False))
+            data = await loop.run_in_executor(None, lambda: extract(f"scsearch1:{query}"))
             if data and 'entries' in data and len(data['entries']) > 0:
                 return data['entries'][0]
         except Exception as e:
@@ -182,7 +184,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
         # 3. Fallback YouTube search
         print("Đang fallback sang YouTube search...")
-        yt_data = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch1:{query}", download=False))
+        yt_data = await loop.run_in_executor(None, lambda: extract(f"ytsearch1:{query}"))
         if yt_data and 'entries' in yt_data and len(yt_data['entries']) > 0:
             return yt_data['entries'][0]
 
