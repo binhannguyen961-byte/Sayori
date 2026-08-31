@@ -16,7 +16,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Sayori AI & SoundCloud Music Bot is Live on Railway!"
+    return "Sayori AI & SoundCloud Music Bot is Live on Railway (Docker)!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -74,21 +74,15 @@ intents = discord.Intents.default()
 intents.message_content = True
 sayori_bot = commands.Bot(command_prefix='!', intents=intents)
 
-# SỬA LỖI OpusNotLoaded: Tự động nạp Opus driver bằng opus_loader
-try:
-    import opus_loader
-    opus_loader.load_opus()
-    print("-> Đã nạp Opus driver thành công qua opus_loader!")
-except Exception as e:
-    print(f"Lỗi nạp opus_loader: {e}")
-    if not discord.opus.is_loaded():
-        for lib in ['libopus.so.0', 'libopus.so', 'libopus-0.dll', 'libopus.dylib']:
-            try:
-                discord.opus.load_opus(lib)
-                print(f"-> Đã nạp Opus driver thủ công: {lib}")
-                break
-            except Exception:
-                continue
+# Nạp Opus driver (Dockerfile đã cài libopus0 sẵn)
+if not discord.opus.is_loaded():
+    for lib in ['libopus.so.0', 'libopus.so']:
+        try:
+            discord.opus.load_opus(lib)
+            print(f"-> Đã nạp Opus driver: {lib}")
+            break
+        except Exception:
+            continue
 
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -168,7 +162,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         loop = loop or asyncio.get_event_loop()
         query = query.strip()
         
-        # 1. Thử trích xuất direct từ SoundCloud
+        # 1. Direct SoundCloud
         if query.startswith('http://') or query.startswith('https://'):
             target_url = await expand_url(query)
             try:
@@ -178,7 +172,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
             except Exception as e:
                 print(f"Lỗi direct SoundCloud extract: {e}")
 
-        # 2. Fallback 1: scsearch SoundCloud
+        # 2. Fallback scsearch SoundCloud
         try:
             data = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"scsearch1:{query}", download=False))
             if data and 'entries' in data and len(data['entries']) > 0:
@@ -186,7 +180,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         except Exception as e:
             print(f"Lỗi scsearch SoundCloud: {e}")
 
-        # 3. Fallback 2: YouTube search (Bypass IP Block hoàn toàn)
+        # 3. Fallback YouTube search
         print("Đang fallback sang YouTube search...")
         yt_data = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch1:{query}", download=False))
         if yt_data and 'entries' in yt_data and len(yt_data['entries']) > 0:
@@ -197,7 +191,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
 # --- 4. Event Handlers ---
 @sayori_bot.event
 async def on_ready():
-    print(f"-> Sayori Online (Railway): {sayori_bot.user}")
+    print(f"-> Sayori Online (Railway Docker): {sayori_bot.user}")
     await sayori_bot.change_presence(activity=discord.Game(name="Mở SoundCloud & Autoplay cùng cậu! ☁️🎶"))
 
 @sayori_bot.event
