@@ -238,17 +238,12 @@ async def fetch_soundcloud_autoplay(last_track, loop):
 
     if entries:
       chosen_data = random.choice(entries)
-      if 'url' not in chosen_data or not chosen_data['url'].startswith('http'):
-        chosen_data = await loop.run_in_executor(
-            None,
-            lambda: ytdl.extract_info(
-                chosen_data.get(
-                    'webpage_url', chosen_data.get('url')
-                ),
-                download=False,
-            ),
+      target_link = chosen_data.get('webpage_url') or chosen_data.get('url')
+      if target_link:
+        full_info = await loop.run_in_executor(
+            None, lambda: ytdl.extract_info(target_link, download=False)
         )
-      return YTDLSource.from_data(chosen_data)
+        return YTDLSource.from_data(full_info)
   except Exception as e:
     print(f'Lỗi Autoplay SoundCloud: {e}')
 
@@ -265,9 +260,10 @@ def play_next(ctx):
     try:
       if isinstance(next_track_data, dict):
         if not next_track_data.get('url'):
-          next_track_data = ytdl.extract_info(
-              next_track_data.get('webpage_url'), download=False
+          target = next_track_data.get('webpage_url') or next_track_data.get(
+              'url'
           )
+          next_track_data = ytdl.extract_info(target, download=False)
         next_source = YTDLSource.from_data(next_track_data)
       else:
         next_source = next_track_data
@@ -375,18 +371,16 @@ async def play_music(ctx, *, search: str):
 
         if not entries:
           return await ctx.send(
-              '*bĩu môi* Playlist này không tìm thấy bài hát nào phát được rồi'
-              ' cậu ơi...'
+              '*bĩu môi* Playlist này không tìm thấy bài hát nào cả cậu ơi...'
           )
 
-        first_track_data = entries[0]
-        if not first_track_data.get('url'):
-          first_track_data = await sayori_bot.loop.run_in_executor(
-              None,
-              lambda: ytdl.extract_info(
-                  first_track_data.get('webpage_url'), download=False
-              ),
-          )
+        first_entry = entries[0]
+        first_url = first_entry.get('webpage_url') or first_entry.get('url')
+
+        # Trích xuất URL stream thực tế cho bài hát đầu tiên
+        first_track_data = await sayori_bot.loop.run_in_executor(
+            None, lambda: ytdl.extract_info(first_url, download=False)
+        )
 
         first_track = YTDLSource.from_data(first_track_data)
 
@@ -413,12 +407,11 @@ async def play_music(ctx, *, search: str):
             if ('entries' in data and data['entries'])
             else data
         )
+
         if not track_data.get('url'):
+          target_url = track_data.get('webpage_url') or track_data.get('url')
           track_data = await sayori_bot.loop.run_in_executor(
-              None,
-              lambda: ytdl.extract_info(
-                  track_data.get('webpage_url'), download=False
-              ),
+              None, lambda: ytdl.extract_info(target_url, download=False)
           )
 
         track = YTDLSource.from_data(track_data)
