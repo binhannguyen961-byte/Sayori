@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import os
 import random
 import threading
@@ -16,7 +17,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Sayori AI & SoundCloud Music Bot is Live on Railway (Docker)!"
+    return "Sayori AI & SoundCloud Music Bot is Live on Railway (Docker Local Storage)!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -74,7 +75,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 sayori_bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Nạp Opus driver (Dockerfile đã cài libopus0 sẵn)
 if not discord.opus.is_loaded():
     for lib in ['libopus.so.0', 'libopus.so']:
         try:
@@ -86,16 +86,10 @@ if not discord.opus.is_loaded():
 
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
-    'extractaudio': True,
-    'audioformat': 'mp3',
-    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
-    'restrictfilenames': True,
-    'noplaylist': False,
-    'nocheckcertificate': True,
-    'ignoreerrors': True,
-    'logtostderr': False,
     'quiet': True,
     'no_warnings': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': True,
     'source_address': '0.0.0.0',
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -112,7 +106,6 @@ last_played_track = {}
 autoplay_status = {}
 
 async def expand_url(url: str) -> str:
-    """Giải mã link rút gọn on.soundcloud.com sang URL SoundCloud gốc"""
     url = url.strip()
     if "on.soundcloud.com" in url or "soundcloud.app.goo.gl" in url:
         headers = {
@@ -128,33 +121,52 @@ async def expand_url(url: str) -> str:
     return url
 
 class YTDLSource(discord.PCMVolumeTransformer):
-    def __init__(self, source, *, data, volume=0.5):
+    def __init__(self, source, *, data, filepath, volume=0.5):
         super().__init__(source, volume)
         self.data = data
         self.title = data.get('title', 'Bài hát')
         self.url = data.get('url')
         self.webpage_url = data.get('webpage_url', '')
         self.uploader = data.get('uploader', 'Nghệ sĩ')
+        self.filepath = filepath
 
     @classmethod
-    def create_source(cls, data):
-        stream_url = data.get('url')
-        if not stream_url and 'formats' in data:
-            for fmt in reversed(data['formats']):
-                if fmt.get('url') and fmt.get('acodec') != 'none':
-                    stream_url = fmt['url']
-                    break
-
-        if not stream_url:
-            raise ValueError("NO_STREAM_URL")
-
-        data['url'] = stream_url
-        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
-        ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn'
+    async def create_source(cls, data, loop=None):
+        loop = loop or asyncio.get_event_loop()
+        
+        # Cấu hình tải âm thanh về thư mục /tmp/
+        download_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': '/tmp/%(id)s.%(ext)s',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'quiet': True,
+            'no_warnings': True,
+            'nocheckcertificate': True,
         }
-        return cls(discord.FFmpegPCMAudio(stream_url, executable=ffmpeg_bin, **ffmpeg_options), data=data)
+        
+        target_url = data.get('webpage_url') or data.get('url')
+        if not target_url and 'id' in data:
+            target_url = f"https://soundcloud.com/{data.get('id')}"
+
+        def download():
+            with yt_dlp.YoutubeDL(download_opts) as ytdl_downloader:
+                info = ytdl_downloader.extract_info(target_url, download=True)
+                file_id = info.get('id') if info else data.get('id')
+                files = glob.glob(f"/tmp/{file_id}.*")
+                return files[0] if files else None
+
+        filepath = await loop.run_in_executor(None, download)
+        
+        if not filepath or not os.path.exists(filepath):
+            raise ValueError("DOWNLOAD_FAILED")
+
+        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        audio_source = discord.FFmpegPCMAudio(filepath, executable=ffmpeg_bin)
+        return cls(audio_source, data=data, filepath=filepath)
 
     @classmethod
     async def fetch_info(cls, query, loop=None):
@@ -183,7 +195,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
             print(f"Lỗi scsearch SoundCloud: {e}")
 
         # 3. Fallback YouTube search
-        print("Đang fallback sang YouTube search...")
         yt_data = await loop.run_in_executor(None, lambda: extract(f"ytsearch1:{query}"))
         if yt_data and 'entries' in yt_data and len(yt_data['entries']) > 0:
             return yt_data['entries'][0]
@@ -217,6 +228,15 @@ async def on_message(message):
             await message.channel.send(reply)
 
 # --- 5. Logic Autoplay & Chuyển bài ---
+def cleanup_file(track):
+    """Hàm tự động dọn dẹp file nhạc cũ trong /tmp/"""
+    try:
+        if track and hasattr(track, 'filepath') and track.filepath and os.path.exists(track.filepath):
+            os.remove(track.filepath)
+            print(f"Đã dọn dẹp file tạm: {track.filepath}")
+    except Exception as e:
+        print(f"Lỗi dọn dẹp file: {e}")
+
 async def fetch_soundcloud_autoplay(last_track, loop):
     try:
         rec_url = f"scsearch5:related to {last_track.title}"
@@ -234,12 +254,12 @@ async def fetch_soundcloud_autoplay(last_track, loop):
                 
         if entries:
             chosen_data = random.choice(entries)
-            return YTDLSource.create_source(chosen_data)
+            return await YTDLSource.create_source(chosen_data, loop=loop)
     except Exception:
         try:
             yt_rec = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch1:{last_track.title} mix", download=False))
             if yt_rec and 'entries' in yt_rec and len(yt_rec['entries']) > 0:
-                return YTDLSource.create_source(yt_rec['entries'][0])
+                return await YTDLSource.create_source(yt_rec['entries'][0], loop=loop)
         except Exception as e:
             print(f"Lỗi Autoplay Fallback: {e}")
             
@@ -249,13 +269,17 @@ def play_next(ctx):
     guild_id = ctx.guild.id
     loop = sayori_bot.loop
     
+    # Dọn dẹp file bài hát cũ
+    if guild_id in last_played_track:
+        cleanup_file(last_played_track[guild_id])
+    
     if guild_id in music_queues and music_queues[guild_id]:
         next_item = music_queues[guild_id].pop(0)
         
         async def process_and_play():
             try:
                 if isinstance(next_item, dict):
-                    next_source = YTDLSource.create_source(next_item)
+                    next_source = await YTDLSource.create_source(next_item, loop=loop)
                 else:
                     next_source = next_item
                 
@@ -273,7 +297,7 @@ def play_next(ctx):
         last_track = last_played_track[guild_id]
         
         async def run_autoplay():
-            await ctx.send(f"🔄 *Autoplay*: Tớ đang tự tìm bài hát liên quan đến **{last_track.title}** cho cậu nè...")
+            await ctx.send(f"🔄 *Autoplay*: Tớ đang tải bài hát liên quan đến **{last_track.title}** cho cậu nè...")
             auto_track = await fetch_soundcloud_autoplay(last_track, loop)
             
             if auto_track and ctx.voice_client:
@@ -340,20 +364,19 @@ async def play_music(ctx, *, search: str):
                 else:
                     data = entries[0]
 
-            # Khởi tạo nguồn audio
+            # Khởi tạo nguồn audio (Tải về local)
             try:
-                track = YTDLSource.create_source(data)
+                track = await YTDLSource.create_source(data, loop=sayori_bot.loop)
             except Exception:
                 song_title = data.get('title') or search
-                print(f"Railway IP bị chặn stream SoundCloud, tự tìm bản YouTube cho: {song_title}")
                 yt_fallback = await sayori_bot.loop.run_in_executor(
                     None, lambda: ytdl.extract_info(f"ytsearch1:{song_title}", download=False)
                 )
                 if yt_fallback and 'entries' in yt_fallback and len(yt_fallback['entries']) > 0:
                     data = yt_fallback['entries'][0]
-                    track = YTDLSource.create_source(data)
+                    track = await YTDLSource.create_source(data, loop=sayori_bot.loop)
                 else:
-                    raise Exception("Không thể phát luồng audio từ nguồn này.")
+                    raise Exception("Không thể tải và xử lý file audio này.")
 
             if ctx.voice_client.is_playing():
                 music_queues[guild_id].append(data)
