@@ -74,19 +74,21 @@ intents = discord.Intents.default()
 intents.message_content = True
 sayori_bot = commands.Bot(command_prefix='!', intents=intents)
 
-# SỬA LỖI OpusNotLoaded: Tự động quét và nạp Opus driver cho Linux / Railway
-if not discord.opus.is_loaded():
-    opus_libs = ['libopus.so.0', 'libopus.so', 'libopus-0.dll', 'libopus.dylib']
-    for lib in opus_libs:
-        try:
-            discord.opus.load_opus(lib)
-            print(f"-> Đã nạp thành công Opus driver: {lib}")
-            break
-        except Exception:
-            continue
-
-if not discord.opus.is_loaded():
-    print("Cảnh báo: Không thể nạp Opus driver! Cần tạo Aptfile chứa libopus0 trên Railway.")
+# SỬA LỖI OpusNotLoaded: Tự động nạp Opus driver bằng opus_loader
+try:
+    import opus_loader
+    opus_loader.load_opus()
+    print("-> Đã nạp Opus driver thành công qua opus_loader!")
+except Exception as e:
+    print(f"Lỗi nạp opus_loader: {e}")
+    if not discord.opus.is_loaded():
+        for lib in ['libopus.so.0', 'libopus.so', 'libopus-0.dll', 'libopus.dylib']:
+            try:
+                discord.opus.load_opus(lib)
+                print(f"-> Đã nạp Opus driver thủ công: {lib}")
+                break
+            except Exception:
+                continue
 
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -342,7 +344,7 @@ async def play_music(ctx, *, search: str):
                 else:
                     data = entries[0]
 
-            # Khởi tạo nguồn audio (Thử SoundCloud stream, nếu bị IP Railway chặn sẽ tự tìm bản YouTube)
+            # Khởi tạo nguồn audio
             try:
                 track = YTDLSource.create_source(data)
             except Exception:
