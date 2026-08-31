@@ -25,7 +25,7 @@ def run_flask():
   app.run(host='0.0.0.0', port=port)
 
 
-# --- 2. Cấu hình Google GenAI SDK Mới (Sayori AI - Hỗ trợ nhiều API Key) ---
+# --- 2. Cấu hình Google GenAI SDK (Sayori AI - Hỗ trợ nhiều API Key) ---
 API_KEYS = []
 for env_name, env_val in os.environ.items():
   if ('GEMINI' in env_name or 'KEY' in env_name) and 'DISCORD' not in env_name:
@@ -154,8 +154,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
   @classmethod
   def from_data(cls, data):
-    filename = data['url']
-    # Truyền trực tiếp đường dẫn binary FFmpeg từ imageio-ffmpeg
+    filename = data.get('url') or data.get('webpage_url')
     ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
     return cls(
         discord.FFmpegPCMAudio(
@@ -263,19 +262,27 @@ def play_next(ctx):
   if guild_id in music_queues and music_queues[guild_id]:
     next_track_data = music_queues[guild_id].pop(0)
 
-    if isinstance(next_track_data, dict):
-      next_source = YTDLSource.from_data(next_track_data)
-    else:
-      next_source = next_track_data
+    try:
+      if isinstance(next_track_data, dict):
+        if not next_track_data.get('url'):
+          next_track_data = ytdl.extract_info(
+              next_track_data.get('webpage_url'), download=False
+          )
+        next_source = YTDLSource.from_data(next_track_data)
+      else:
+        next_source = next_track_data
 
-    last_played_track[guild_id] = next_source
-    ctx.voice_client.play(next_source, after=lambda e: play_next(ctx))
+      last_played_track[guild_id] = next_source
+      ctx.voice_client.play(next_source, after=lambda e: play_next(ctx))
 
-    coro = ctx.send(
-        '☁️ *nhún nhảy theo SoundCloud* Đang phát bài tiếp theo:'
-        f' **{next_source.title}** - `{next_source.uploader}` 🎶'
-    )
-    asyncio.run_coroutine_threadsafe(coro, loop)
+      coro = ctx.send(
+          '☁️ *nhún nhảy theo SoundCloud* Đang phát bài tiếp theo:'
+          f' **{next_source.title}** - `{next_source.uploader}` 🎶'
+      )
+      asyncio.run_coroutine_threadsafe(coro, loop)
+    except Exception as e:
+      print(f'Lỗi phát bài tiếp theo: {e}')
+      play_next(ctx)
 
   elif autoplay_status.get(guild_id, True) and guild_id in last_played_track:
     last_track = last_played_track[guild_id]
@@ -366,7 +373,21 @@ async def play_music(ctx, *, search: str):
         entries = [e for e in data['entries'] if e]
         playlist_title = data.get('title', 'SoundCloud Playlist')
 
+        if not entries:
+          return await ctx.send(
+              '*bĩu môi* Playlist này không tìm thấy bài hát nào phát được rồi'
+              ' cậu ơi...'
+          )
+
         first_track_data = entries[0]
+        if not first_track_data.get('url'):
+          first_track_data = await sayori_bot.loop.run_in_executor(
+              None,
+              lambda: ytdl.extract_info(
+                  first_track_data.get('webpage_url'), download=False
+              ),
+          )
+
         first_track = YTDLSource.from_data(first_track_data)
 
         for entry in entries[1:]:
@@ -392,6 +413,14 @@ async def play_music(ctx, *, search: str):
             if ('entries' in data and data['entries'])
             else data
         )
+        if not track_data.get('url'):
+          track_data = await sayori_bot.loop.run_in_executor(
+              None,
+              lambda: ytdl.extract_info(
+                  track_data.get('webpage_url'), download=False
+              ),
+          )
+
         track = YTDLSource.from_data(track_data)
 
         if ctx.voice_client.is_playing():
