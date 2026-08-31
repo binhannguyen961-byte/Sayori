@@ -87,10 +87,17 @@ async def ask_sayori(prompt):
   )
 
 
-# --- 3. Cấu hình Discord Bot Sayori & SoundCloud Engine ---
+# --- 3. Cấu hình Discord Bot Sayori & Engine Âm Thanh ---
 intents = discord.Intents.default()
 intents.message_content = True
 sayori_bot = commands.Bot(command_prefix='!', intents=intents)
+
+# Tự động nạp thư viện Opus mã hóa Voice
+if not discord.opus.is_loaded():
+  try:
+    discord.opus.load_opus('libopus.so.0')
+  except Exception as e:
+    print(f'Lỗi nạp Opus driver: {e}')
 
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -107,11 +114,13 @@ YTDL_OPTIONS = {
     'source_address': '0.0.0.0',
 }
 
+# Tối ưu hóa FFmpeg để chống giật lag / câm tiếng do CDN SoundCloud ngắt kết nối
 FFMPEG_OPTIONS = {
     'before_options': (
         '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+        ' -probesize 10000000 -analyzeduration 15000000'
     ),
-    'options': '-vn',
+    'options': '-vn -loglevel error',
 }
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
@@ -259,7 +268,6 @@ def play_next(ctx):
 
     async def process_and_play():
       try:
-        # Bóc tách lại Stream URL chuẩn nếu item là dict từ playlist
         if isinstance(next_item, dict):
           target_url = next_item.get('webpage_url') or next_item.get('url')
           full_data = await loop.run_in_executor(
@@ -376,7 +384,6 @@ async def play_music(ctx, *, search: str):
               '*bĩu môi* Playlist này không tìm thấy bài hát nào cả cậu ơi...'
           )
 
-        # Đưa toàn bộ danh sách bài vào hàng chờ
         for entry in entries:
           music_queues[guild_id].append(entry)
 
@@ -385,7 +392,6 @@ async def play_music(ctx, *, search: str):
             f' **{len(entries)}** bài vào danh sách chờ!'
         )
 
-        # Nếu chưa phát nhạc thì kích hoạt phát bài đầu tiên trong hàng chờ
         if not ctx.voice_client.is_playing():
           play_next(ctx)
 
