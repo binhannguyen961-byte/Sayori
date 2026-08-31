@@ -1,6 +1,6 @@
 discord.py[voice]
-yt-dlp
-flask
 google-genai
-pynacl
+yt-dlp>=2024.08.01
 imageio-ffmpeg
+Flask
+aiohttp
