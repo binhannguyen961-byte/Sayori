@@ -74,11 +74,19 @@ intents = discord.Intents.default()
 intents.message_content = True
 sayori_bot = commands.Bot(command_prefix='!', intents=intents)
 
+# SỬA LỖI OpusNotLoaded: Tự động quét và nạp Opus driver cho Linux / Railway
 if not discord.opus.is_loaded():
-    try:
-        discord.opus.load_opus('libopus.so.0')
-    except Exception as e:
-        print(f"Lỗi nạp Opus driver: {e}")
+    opus_libs = ['libopus.so.0', 'libopus.so', 'libopus-0.dll', 'libopus.dylib']
+    for lib in opus_libs:
+        try:
+            discord.opus.load_opus(lib)
+            print(f"-> Đã nạp thành công Opus driver: {lib}")
+            break
+        except Exception:
+            continue
+
+if not discord.opus.is_loaded():
+    print("Cảnh báo: Không thể nạp Opus driver! Cần tạo Aptfile chứa libopus0 trên Railway.")
 
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -147,7 +155,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
                     break
 
         if not stream_url:
-            raise ValueError("Chặn luồng audio (Stream URL Blocked)")
+            raise ValueError("NO_STREAM_URL")
 
         data['url'] = stream_url
         ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
@@ -158,7 +166,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         loop = loop or asyncio.get_event_loop()
         query = query.strip()
         
-        # BƯỚC 1: Thử trích xuất direct từ SoundCloud
+        # 1. Thử trích xuất direct từ SoundCloud
         if query.startswith('http://') or query.startswith('https://'):
             target_url = await expand_url(query)
             try:
@@ -168,7 +176,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
             except Exception as e:
                 print(f"Lỗi direct SoundCloud extract: {e}")
 
-        # BƯỚC 2: Fallback 1 - scsearch SoundCloud
+        # 2. Fallback 1: scsearch SoundCloud
         try:
             data = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"scsearch1:{query}", download=False))
             if data and 'entries' in data and len(data['entries']) > 0:
@@ -176,7 +184,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         except Exception as e:
             print(f"Lỗi scsearch SoundCloud: {e}")
 
-        # BƯỚC 3: Fallback 2 - Chuyển sang YouTube search (Bypass IP Block hoàn toàn)
+        # 3. Fallback 2: YouTube search (Bypass IP Block hoàn toàn)
         print("Đang fallback sang YouTube search...")
         yt_data = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch1:{query}", download=False))
         if yt_data and 'entries' in yt_data and len(yt_data['entries']) > 0:
@@ -230,7 +238,6 @@ async def fetch_soundcloud_autoplay(last_track, loop):
             chosen_data = random.choice(entries)
             return YTDLSource.create_source(chosen_data)
     except Exception:
-        # Nếu SoundCloud Autoplay xịt, fallback tự tìm bài liên quan trên YouTube
         try:
             yt_rec = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch1:{last_track.title} mix", download=False))
             if yt_rec and 'entries' in yt_rec and len(yt_rec['entries']) > 0:
