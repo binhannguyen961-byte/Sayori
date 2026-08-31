@@ -2,6 +2,7 @@ import asyncio
 import os
 import random
 import threading
+import aiohttp
 from flask import Flask
 import discord
 from discord.ext import commands
@@ -97,7 +98,6 @@ if not discord.opus.is_loaded():
   except Exception as e:
     print(f'Lỗi nạp Opus driver: {e}')
 
-# Cấu hình yt-dlp tối ưu riêng cho SoundCloud
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -111,13 +111,13 @@ YTDL_OPTIONS = {
     'quiet': True,
     'no_warnings': True,
     'source_address': '0.0.0.0',
-    'force_generic_extractor': False,
     'http_headers': {
         'User-Agent': (
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X)'
-            ' AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6'
-            ' Mobile/15E148 Safari/604.1'
-        )
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            ' (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        ),
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
     },
 }
 
@@ -134,6 +134,28 @@ ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 music_queues = {}
 last_played_track = {}
 autoplay_status = {}
+
+
+async def expand_url(url: str) -> str:
+  """Giải mã link rút gọn on.soundcloud.com bất đồng bộ"""
+  url = url.strip()
+  if 'on.soundcloud.com' in url or 'soundcloud.app.goo.gl' in url:
+    headers = {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            ' (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        )
+    }
+    try:
+      async with aiohttp.ClientSession(headers=headers) as session:
+        async with session.get(
+            url, allow_redirects=True, timeout=10
+        ) as response:
+          final_url = str(response.url)
+          return final_url.split('?')[0] if '?' in final_url else final_url
+    except Exception as e:
+      print(f'Lỗi expand URL với aiohttp: {e}')
+  return url
 
 
 class YTDLSource(discord.PCMVolumeTransformer):
@@ -162,13 +184,28 @@ class YTDLSource(discord.PCMVolumeTransformer):
     loop = loop or asyncio.get_event_loop()
     query = query.strip()
 
-    if not (query.startswith('http://') or query.startswith('https://')):
-      query = f'scsearch:{query}'
+    if query.startswith('http://') or query.startswith('https://'):
+      # BƯỚC 1: Giải mã link rút gọn ra link gốc
+      target_url = await expand_url(query)
+      data = await loop.run_in_executor(
+          None, lambda: ytdl.extract_info(target_url, download=False)
+      )
 
-    # Trực tiếp extract thông tin từ URL mà không qua hàm urllib trung gian
-    data = await loop.run_in_executor(
-        None, lambda: ytdl.extract_info(query, download=False)
-    )
+      # BƯỚC 2: Fallback tìm kiếm bằng scsearch nếu trích xuất link trực tiếp thất bại
+      if not data:
+        print(
+            f'Extract URL thất bại ({target_url}), chuyển sang fallback'
+            ' scsearch...'
+        )
+        data = await loop.run_in_executor(
+            None,
+            lambda: ytdl.extract_info(f'scsearch:{query}', download=False),
+        )
+    else:
+      data = await loop.run_in_executor(
+          None, lambda: ytdl.extract_info(f'scsearch:{query}', download=False)
+      )
+
     return data
 
 
@@ -358,30 +395,53 @@ async def play_music(ctx, *, search: str):
       )
 
     try:
-      # Xử lý trường hợp nhận về Playlist
-      entries = data.get('entries', [])
-      if entries:
-        entries = [e for e in entries if e]
-        playlist_title = data.get('title', 'SoundCloud Playlist')
+      # Nếu kết quả trả về là một danh sách entries (Playlist hoặc Search result)
+      if 'entries' in data and data['entries']:
+        entries = [e for e in data['entries'] if e]
+        playlist_title = data.get('title', 'SoundCloud Playlist/Search')
 
-        for entry in entries:
-          music_queues[guild_id].append(entry)
+        if len(entries) > 1:
+          for entry in entries:
+            music_queues[guild_id].append(entry)
 
-        await ctx.send(
-            f'☁️ **ĐÃ THÊM PLAYLIST:** `{playlist_title}` với'
-            f' **{len(entries)}** bài vào danh sách chờ!'
-        )
+          await ctx.send(
+              f'☁️ **ĐÃ THÊM PLAYLIST:** `{playlist_title}` với'
+              f' **{len(entries)}** bài vào danh sách chờ!'
+          )
 
-        if not ctx.voice_client.is_playing():
-          play_next(ctx)
+          if not ctx.voice_client.is_playing():
+            play_next(ctx)
+        else:
+          # Chỉ có 1 kết quả duy nhất từ search fallback
+          single_entry = entries[0]
+          target_url = single_entry.get('webpage_url') or single_entry.get(
+              'url'
+          )
+          full_track_data = await sayori_bot.loop.run_in_executor(
+              None, lambda: ytdl.extract_info(target_url, download=False)
+          )
+          track = YTDLSource.from_data(full_track_data)
 
-      # Xử lý trường hợp 1 bài lẻ
+          if ctx.voice_client.is_playing():
+            music_queues[guild_id].append(full_track_data)
+            await ctx.send(
+                f'☁️ *Đã thêm vào danh sách chờ:* **{track.title}** -'
+                f' `{track.uploader}`'
+            )
+          else:
+            last_played_track[guild_id] = track
+            ctx.voice_client.play(track, after=lambda e: play_next(ctx))
+            await ctx.send(
+                f'🎶 *Đang phát SoundCloud:* **{track.title}** -'
+                f' `{track.uploader}` ☀️'
+            )
+
+      # Trường hợp 1 bài lẻ chuẩn
       else:
         target_url = data.get('webpage_url') or data.get('url')
         full_track_data = await sayori_bot.loop.run_in_executor(
             None, lambda: ytdl.extract_info(target_url, download=False)
         )
-
         track = YTDLSource.from_data(full_track_data)
 
         if ctx.voice_client.is_playing():
