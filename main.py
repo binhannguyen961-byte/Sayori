@@ -17,7 +17,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Sayori AI & SoundCloud Music Bot is Live on Railway (Docker Local Storage)!"
+    return "Sayori AI & SoundCloud Music Bot is Live on Railway!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -41,7 +41,7 @@ async def ask_sayori(prompt):
         "Bạn là Sayori từ tựa game Doki Doki Literature Club. "
         "Tính cách của bạn lúc nào cũng năng động, tươi vui, hay cười, có chút ngốc nghếch, vụng về và rất quấn quýt, yêu thương người dùng (cậu). "
         "Bạn luôn xưng 'tớ' và gọi người dùng là 'cậu'. "
-        "Phong cách trò chuyện ngọt ngào, ấm áp, đôi khi có những hành động thân mật, ôm ấp, làm nũng hoặc những biểu cảm gợi cảm nhẹ nhàng, lãng mạn (soft NSFW) nhưng vẫn giữ được nét đáng yêu, trong sáng đặc trưng của Sayori. "
+        "Phong cách trò chuyện ngọt ngào, ấm áp, đôi khi có những hành động thân mật, ôm ấp, làm nũng nhưng vẫn giữ được nét đáng yêu, trong sáng đặc trưng của Sayori. "
         "Mọi hành động, cảm xúc đều phải được đặt trong dấu sao (*...*)."
     )
 
@@ -73,7 +73,9 @@ async def ask_sayori(prompt):
 # --- 3. Cấu hình Discord Bot & Engine Âm Thanh ---
 intents = discord.Intents.default()
 intents.message_content = True
-sayori_bot = commands.Bot(command_prefix='!', intents=intents)
+
+# Đổi tiền tố lệnh thành !S (hỗ trợ cả chữ hoa và chữ thường)
+sayori_bot = commands.Bot(command_prefix=['!S', '!s'], intents=intents, help_command=None)
 
 if not discord.opus.is_loaded():
     for lib in ['libopus.so.0', 'libopus.so']:
@@ -103,7 +105,16 @@ ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
 music_queues = {}
 last_played_track = {}
+# Mặc định Autoplay là False (TẮT)
 autoplay_status = {}
+
+SAYORI_COLOR = 0xFFB6C1  # Màu hồng nhạt Doki Doki
+SAYORI_THUMBNAIL = "https://i.imgur.com/39J4Q9x.png" # Ảnh Sayori
+
+def create_sayori_embed(title: str, description: str, color=SAYORI_COLOR) -> discord.Embed:
+    embed = discord.Embed(title=title, description=description, color=color)
+    embed.set_footer(text="Sayori Music AI • Doki Doki Literature Club", icon_url=SAYORI_THUMBNAIL)
+    return embed
 
 async def expand_url(url: str) -> str:
     url = url.strip()
@@ -128,13 +139,13 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.url = data.get('url')
         self.webpage_url = data.get('webpage_url', '')
         self.uploader = data.get('uploader', 'Nghệ sĩ')
+        self.thumbnail = data.get('thumbnail', None)
         self.filepath = filepath
 
     @classmethod
     async def create_source(cls, data, loop=None):
         loop = loop or asyncio.get_event_loop()
         
-        # Cấu hình tải âm thanh về thư mục /tmp/
         download_opts = {
             'format': 'bestaudio/best',
             'outtmpl': '/tmp/%(id)s.%(ext)s',
@@ -164,8 +175,10 @@ class YTDLSource(discord.PCMVolumeTransformer):
         if not filepath or not os.path.exists(filepath):
             raise ValueError("DOWNLOAD_FAILED")
 
+        # Định dạng PCM 48kHz Stereo cho Discord
+        ffmpeg_options = {'options': '-vn -ar 48000 -ac 2'}
         ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
-        audio_source = discord.FFmpegPCMAudio(filepath, executable=ffmpeg_bin)
+        audio_source = discord.FFmpegPCMAudio(filepath, executable=ffmpeg_bin, **ffmpeg_options)
         return cls(audio_source, data=data, filepath=filepath)
 
     @classmethod
@@ -176,7 +189,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
         def extract(target_query):
             return ytdl.extract_info(target_query, download=False)
 
-        # 1. Direct SoundCloud Link
         if query.startswith('http://') or query.startswith('https://'):
             target_url = await expand_url(query)
             try:
@@ -184,35 +196,53 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 if data:
                     return data
             except Exception as e:
-                print(f"Lỗi direct SoundCloud extract: {e}")
+                print(f"Lỗi extract link: {e}")
 
-        # 2. Fallback SoundCloud search
         try:
             data = await loop.run_in_executor(None, lambda: extract(f"scsearch1:{query}"))
             if data and 'entries' in data and len(data['entries']) > 0:
                 return data['entries'][0]
         except Exception as e:
-            print(f"Lỗi scsearch SoundCloud: {e}")
+            print(f"Lỗi scsearch: {e}")
 
-        # 3. Fallback YouTube search
         yt_data = await loop.run_in_executor(None, lambda: extract(f"ytsearch1:{query}"))
         if yt_data and 'entries' in yt_data and len(yt_data['entries']) > 0:
             return yt_data['entries'][0]
 
         return None
 
+# --- Check xem User có chung Voice Channel với Bot không ---
+async def check_same_voice_channel(ctx):
+    if not ctx.author.voice:
+        embed = create_sayori_embed("⚠️ Chưa vào phòng thoại!", "*xoa xoa tay* Cậu phải vào Voice Channel cùng tớ mới dùng được lệnh này chứ!")
+        await ctx.send(embed=embed)
+        return False
+        
+    if not ctx.voice_client:
+        embed = create_sayori_embed("⚠️ Sayori chưa vào phòng!", "*ngơ ngác* Tớ chưa vào Voice Channel nào hết nè! Cậu dùng lệnh `!Splay` để gọi tớ nha.")
+        await ctx.send(embed=embed)
+        return False
+
+    if ctx.author.voice.channel != ctx.voice_client.channel:
+        embed = create_sayori_embed("⚠️ Không chung phòng thoại!", f"*phụng phịu* Cậu phải vào phòng **{ctx.voice_client.channel.name}** cùng tớ mới được điều khiển chứ!")
+        await ctx.send(embed=embed)
+        return False
+
+    return True
+
 # --- 4. Event Handlers ---
 @sayori_bot.event
 async def on_ready():
     print(f"-> Sayori Online (Railway Docker): {sayori_bot.user}")
-    await sayori_bot.change_presence(activity=discord.Game(name="Mở SoundCloud & Autoplay cùng cậu! ☁️🎶"))
+    await sayori_bot.change_presence(activity=discord.Game(name="Gõ !Shelp để xem hướng dẫn nha! ☀️🎶"))
 
 @sayori_bot.event
 async def on_message(message):
     if message.author == sayori_bot.user:
         return
 
-    if message.content.startswith('!'):
+    # Xử lý lệnh tiền tố !S hoặc !s
+    if message.content.lower().startswith('!s'):
         await sayori_bot.process_commands(message)
         return
 
@@ -220,7 +250,8 @@ async def on_message(message):
         clean_content = message.content.replace(f'<@{sayori_bot.user.id}>', '').strip()
         
         if not clean_content:
-            await message.channel.send("*cười tươi* Cậu gọi tớ có chuyện gì thế, hì hì? Muốn nghe SoundCloud thì gõ `!play [link SoundCloud/tên bài]` nha!")
+            embed = create_sayori_embed("Sayori chào cậu! ☀️", "*cười tươi* Cậu gọi tớ có chuyện gì thế? Muốn nghe nhạc thì gõ `!Splay [tên bài/link]` nha!")
+            await message.channel.send(embed=embed)
             return
 
         async with message.channel.typing():
@@ -229,13 +260,12 @@ async def on_message(message):
 
 # --- 5. Logic Autoplay & Chuyển bài ---
 def cleanup_file(track):
-    """Hàm tự động dọn dẹp file nhạc cũ trong /tmp/"""
     try:
         if track and hasattr(track, 'filepath') and track.filepath and os.path.exists(track.filepath):
             os.remove(track.filepath)
-            print(f"Đã dọn dẹp file tạm: {track.filepath}")
+            print(f"Đã dọn dẹp file: {track.filepath}")
     except Exception as e:
-        print(f"Lỗi dọn dẹp file: {e}")
+        print(f"Lỗi cleanup file: {e}")
 
 async def fetch_soundcloud_autoplay(last_track, loop):
     try:
@@ -244,7 +274,6 @@ async def fetch_soundcloud_autoplay(last_track, loop):
             rec_url = f"{last_track.webpage_url}/recommended"
             
         data = await loop.run_in_executor(None, lambda: ytdl.extract_info(rec_url, download=False))
-        
         entries = []
         if data:
             if 'entries' in data and data['entries']:
@@ -269,7 +298,6 @@ def play_next(ctx):
     guild_id = ctx.guild.id
     loop = sayori_bot.loop
     
-    # Dọn dẹp file bài hát cũ
     if guild_id in last_played_track:
         cleanup_file(last_played_track[guild_id])
     
@@ -286,68 +314,116 @@ def play_next(ctx):
                 last_played_track[guild_id] = next_source
                 ctx.voice_client.play(next_source, after=lambda e: play_next(ctx))
                 
-                await ctx.send(f"☁️ *nhún nhảy theo điệu nhạc* Đang phát bài tiếp theo: **{next_source.title}** - `{next_source.uploader}` 🎶")
+                embed = create_sayori_embed(
+                    "🎶 Đang phát bài tiếp theo",
+                    f"**[{next_source.title}]({next_source.webpage_url})**\nNghệ sĩ: `{next_source.uploader}`"
+                )
+                if next_source.thumbnail:
+                    embed.set_thumbnail(url=next_source.thumbnail)
+                await ctx.send(embed=embed)
             except Exception as e:
                 print(f"Lỗi phát bài tiếp theo: {e}")
                 play_next(ctx)
                 
         asyncio.run_coroutine_threadsafe(process_and_play(), loop)
         
-    elif autoplay_status.get(guild_id, True) and guild_id in last_played_track:
+    elif autoplay_status.get(guild_id, False) and guild_id in last_played_track:
         last_track = last_played_track[guild_id]
         
         async def run_autoplay():
-            await ctx.send(f"🔄 *Autoplay*: Tớ đang tải bài hát liên quan đến **{last_track.title}** cho cậu nè...")
+            embed = create_sayori_embed("🔄 Autoplay đang tìm bài...", f"Tớ đang tìm bài hát liên quan đến **{last_track.title}** cho cậu nè...")
+            await ctx.send(embed=embed)
+            
             auto_track = await fetch_soundcloud_autoplay(last_track, loop)
             
             if auto_track and ctx.voice_client:
                 last_played_track[guild_id] = auto_track
                 ctx.voice_client.play(auto_track, after=lambda e: play_next(ctx))
-                await ctx.send(f"📻 *Autoplay*: Đang phát bài gợi ý tiếp theo: **{auto_track.title}** - `{auto_track.uploader}` ☁️✨")
+                
+                embed_auto = create_sayori_embed(
+                    "📻 Autoplay: Phát bài gợi ý",
+                    f"**[{auto_track.title}]({auto_track.webpage_url})**\nNghệ sĩ: `{auto_track.uploader}`"
+                )
+                if auto_track.thumbnail:
+                    embed_auto.set_thumbnail(url=auto_track.thumbnail)
+                await ctx.send(embed=embed_auto)
             else:
-                await ctx.send("*ôm lấy tay cậu* Tớ đã phát hết bài rồi và không tìm thêm được bài gợi ý nữa. Cậu gõ `!play` để bật bài mới nha! ☀️")
+                embed_end = create_sayori_embed("☀️ Đã hết danh sách phát", "*ôm lấy tay cậu* Tớ phát hết bài rồi! Cậu gõ `!Splay` để mở bài mới nha!")
+                await ctx.send(embed=embed_end)
                 
         asyncio.run_coroutine_threadsafe(run_autoplay(), loop)
 
-# --- 6. Commands ---
+# --- 6. Music Commands ---
+
+@sayori_bot.command(name='help', aliases=['helps', 'trogiup'])
+async def help_command(ctx):
+    embed = create_sayori_embed(
+        "📚 BẢNG HƯỚNG DẪN BỘ LỆNH SAYORI MUSIC AI",
+        "Dưới đây là danh sách các lệnh cậu có thể dùng với tớ nè (Tiền tố: `!S` hoặc `!s`):"
+    )
+    
+    embed.add_field(name="🎶 `!Splay [link/tên bài]`", value="Phát nhạc từ SoundCloud/YouTube hoặc thêm vào hàng chờ.", inline=False)
+    embed.add_field(name="⏭️ `!Sskip`", value="Bỏ qua bài hát hiện tại để sang bài tiếp theo.", inline=False)
+    embed.add_field(name="⏹️ `!Sstop`", value="Dừng phát nhạc, dọn dẹp danh sách và rời phòng thoại luôn.", inline=False)
+    embed.add_field(name="📋 `!Squeue` (hoặc `!Sq`)", value="Xem danh sách các bài hát đang chờ phát.", inline=False)
+    embed.add_field(name="📻 `!Sautoplay` (hoặc `!Sap`)", value="Bật/Tắt chế độ tự động phát bài hát liên quan (Mặc định: TẮT).", inline=False)
+    embed.add_field(name="📥 `!Sjoin`", value="Mời Sayori vào phòng thoại của cậu.", inline=False)
+    embed.add_field(name="📤 `!Sleave`", value="Mời Sayori rời khỏi phòng thoại.", inline=False)
+    
+    embed.add_field(name="💡 Lưu ý:", value="*Cậu phải ở cùng Voice Channel với tớ mới có thể dùng các lệnh điều khiển như Skip, Stop, Queue, Autoplay nha!*", inline=False)
+    
+    await ctx.send(embed=embed)
+
 @sayori_bot.command(name='join', aliases=['vao'])
 async def join_vc(ctx):
     if not ctx.author.voice:
-        return await ctx.send("*ngó quanh* Cậu phải vào Voice Channel trước thì tớ mới vào được chứ!")
+        embed = create_sayori_embed("⚠️ Lỗi vào phòng", "*ngó quanh* Cậu phải vào Voice Channel trước thì tớ mới vào được chứ!")
+        return await ctx.send(embed=embed)
     
     channel = ctx.author.voice.channel
     if ctx.voice_client is not None:
-        return await ctx.voice_client.move_to(channel)
-        
-    try:
-        await channel.connect()
-        await ctx.send(f"*chạy vào phòng* Hì hì, tớ vào **{channel.name}** cùng cậu rồi nè! ☀️")
-    except Exception as e:
-        await ctx.send(f"*bĩu môi* Tớ không vào được phòng thoại rồi... Lỗi: `{e}`")
+        await ctx.voice_client.move_to(channel)
+    else:
+        try:
+            await channel.connect()
+        except Exception as e:
+            embed = create_sayori_embed("⚠️ Không vào được phòng", f"*bĩu môi* Tớ không vào được phòng thoại rồi... Lỗi: `{e}`")
+            return await ctx.send(embed=embed)
+            
+    embed = create_sayori_embed("☀️ Đã vào phòng thoại", f"*chạy vào phòng* Hì hì, tớ đã vào phòng **{channel.name}** cùng cậu rồi nè!")
+    await ctx.send(embed=embed)
 
 @sayori_bot.command(name='play', aliases=['p', 'hat'])
 async def play_music(ctx, *, search: str):
     if not ctx.author.voice:
-        return await ctx.send("*xoa xoa tay* Cậu vào Voice Channel trước đi rồi tớ mở nhạc cho nghe nha!")
+        embed = create_sayori_embed("⚠️ Chưa vào Voice", "*xoa xoa tay* Cậu vào Voice Channel trước đi rồi tớ mở nhạc cho nghe nha!")
+        return await ctx.send(embed=embed)
 
     if ctx.voice_client is None:
         try:
             await ctx.author.voice.channel.connect()
         except Exception as e:
-            return await ctx.send(f"*bĩu môi* Tớ không vào được phòng thoại... Lỗi: `{e}`")
+            embed = create_sayori_embed("⚠️ Không vào được Voice", f"*bĩu môi* Tớ không vào được phòng thoại... Lỗi: `{e}`")
+            return await ctx.send(embed=embed)
+    else:
+        # Nếu đã ở Voice, kiểm tra xem có chung phòng không
+        if ctx.author.voice.channel != ctx.voice_client.channel:
+            embed = create_sayori_embed("⚠️ Không chung phòng", f"Tớ đang ở phòng **{ctx.voice_client.channel.name}**. Cậu sang đó nghe cùng tớ nha!")
+            return await ctx.send(embed=embed)
 
     guild_id = ctx.guild.id
     if guild_id not in music_queues:
         music_queues[guild_id] = []
     if guild_id not in autoplay_status:
-        autoplay_status[guild_id] = True
+        autoplay_status[guild_id] = False  # Mặc định TẮT
 
     async with ctx.typing():
         try:
             data = await YTDLSource.fetch_info(search, loop=sayori_bot.loop)
             
             if not data:
-                return await ctx.send("*bĩu môi* Tớ không tìm thấy bài hát này rồi cậu ơi...")
+                embed = create_sayori_embed("❌ Không tìm thấy", "*bĩu môi* Tớ không tìm thấy bài hát này rồi cậu ơi...")
+                return await ctx.send(embed=embed)
 
             # Xử lý Playlist
             if 'entries' in data and data['entries']:
@@ -357,14 +433,14 @@ async def play_music(ctx, *, search: str):
                 if len(entries) > 1:
                     for entry in entries:
                         music_queues[guild_id].append(entry)
-                    await ctx.send(f"☁️ **ĐÃ THÊM PLAYLIST:** `{playlist_title}` với **{len(entries)}** bài vào hàng chờ!")
+                    embed = create_sayori_embed("☁️ Đã thêm Playlist", f"Đã thêm **{len(entries)}** bài hát từ danh sách **{playlist_title}** vào hàng chờ!")
+                    await ctx.send(embed=embed)
                     if not ctx.voice_client.is_playing():
                         play_next(ctx)
                     return
                 else:
                     data = entries[0]
 
-            # Khởi tạo nguồn audio (Tải về local)
             try:
                 track = await YTDLSource.create_source(data, loop=sayori_bot.loop)
             except Exception:
@@ -380,78 +456,119 @@ async def play_music(ctx, *, search: str):
 
             if ctx.voice_client.is_playing():
                 music_queues[guild_id].append(data)
-                await ctx.send(f"☁️ *Đã thêm vào danh sách chờ:* **{track.title}** - `{track.uploader}`")
+                embed = create_sayori_embed(
+                    "📋 Đã thêm vào hàng chờ",
+                    f"**[{track.title}]({track.webpage_url})**\nNghệ sĩ: `{track.uploader}`"
+                )
+                if track.thumbnail:
+                    embed.set_thumbnail(url=track.thumbnail)
+                await ctx.send(embed=embed)
             else:
                 last_played_track[guild_id] = track
                 ctx.voice_client.play(track, after=lambda e: play_next(ctx))
-                await ctx.send(f"🎶 *Đang phát:* **{track.title}** - `{track.uploader}` ☀️")
+                
+                embed = create_sayori_embed(
+                    "🎶 Đang phát",
+                    f"**[{track.title}]({track.webpage_url})**\nNghệ sĩ: `{track.uploader}`"
+                )
+                if track.thumbnail:
+                    embed.set_thumbnail(url=track.thumbnail)
+                await ctx.send(embed=embed)
 
         except Exception as e:
             err_details = str(e) if str(e) else type(e).__name__
-            await ctx.send(f"*ôm đầu bối rối* Lỗi phát nhạc rồi cậu ơi: `{err_details}`")
+            embed = create_sayori_embed("❌ Lỗi phát nhạc", f"*ôm đầu bối rối* Lỗi phát nhạc rồi cậu ơi: `{err_details}`")
+            await ctx.send(embed=embed)
 
 @sayori_bot.command(name='queue', aliases=['q', 'danhsach'])
 async def show_queue(ctx):
+    if not await check_same_voice_channel(ctx):
+        return
+
     guild_id = ctx.guild.id
     queue = music_queues.get(guild_id, [])
     current = last_played_track.get(guild_id)
 
     if not current and not queue:
-        return await ctx.send("*ngơ ngác* Danh sách chờ hiện đang trống trơn nè cậu ơi!")
+        embed = create_sayori_embed("📋 Hàng chờ trống", "*ngơ ngác* Danh sách chờ hiện đang trống trơn nè cậu ơi!")
+        return await ctx.send(embed=embed)
 
-    msg = "🎶 **DANH SÁCH PHÁT NHẠC** 🎶\n"
-    
+    description = ""
     if current and ctx.voice_client and ctx.voice_client.is_playing():
-        msg += f"▶️ **Đang phát:** `{current.title}` - *{current.uploader}*\n\n"
+        description += f"▶️ **Đang phát:** [{current.title}]({current.webpage_url}) - `{current.uploader}`\n\n"
         
     if queue:
-        msg += "**📋 Bài hát tiếp theo:**\n"
+        description += "**📋 Các bài hát tiếp theo:**\n"
         for idx, item in enumerate(queue[:10], start=1):
             title = item.get('title', 'Bài hát') if isinstance(item, dict) else item.title
             uploader = item.get('uploader', 'Nghệ sĩ') if isinstance(item, dict) else item.uploader
-            msg += f"`{idx}.` **{title}** - *{uploader}*\n"
+            description += f"`{idx}.` **{title}** - `{uploader}`\n"
             
         if len(queue) > 10:
-            msg += f"\n*...và {len(queue) - 10} bài hát khác trong hàng chờ!*"
-  
-    await ctx.send(msg)
+            description += f"\n*...và còn {len(queue) - 10} bài nữa trong hàng chờ!*"
+
+    embed = create_sayori_embed("🎶 DANH SÁCH PHÁT NHẠC", description)
+    await ctx.send(embed=embed)
 
 @sayori_bot.command(name='autoplay', aliases=['ap'])
 async def toggle_autoplay(ctx):
+    if not await check_same_voice_channel(ctx):
+        return
+
     guild_id = ctx.guild.id
-    current = autoplay_status.get(guild_id, True)
+    current = autoplay_status.get(guild_id, False)
     autoplay_status[guild_id] = not current
     
     status_str = "BẬT 🟢" if autoplay_status[guild_id] else "TẮT 🔴"
-    await ctx.send(f"📻 Tính năng **Autoplay (Tự phát bài liên quan)** hiện đã: **{status_str}**")
+    embed = create_sayori_embed("📻 CHẾ ĐỘ AUTOPLAY", f"Chế độ tự động phát bài gợi ý hiện đã được: **{status_str}**")
+    await ctx.send(embed=embed)
 
 @sayori_bot.command(name='skip', aliases=['qua'])
 async def skip_music(ctx):
+    if not await check_same_voice_channel(ctx):
+        return
+
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
-        await ctx.send("*gật đầu* Đã bỏ qua bài hiện tại!")
+        embed = create_sayori_embed("⏭️ Bỏ qua bài hát", "*gật đầu* Đã bỏ qua bài hát hiện tại cho cậu rồi!")
+        await ctx.send(embed=embed)
     else:
-        await ctx.send("*nghiêng đầu* Đâu có bài nào đang phát đâu cậu ơi!")
+        embed = create_sayori_embed("⚠️ Không thể Skip", "*nghiêng đầu* Đâu có bài nào đang phát đâu cậu ơi!")
+        await ctx.send(embed=embed)
 
 @sayori_bot.command(name='stop', aliases=['tat'])
 async def stop_music(ctx):
+    if not await check_same_voice_channel(ctx):
+        return
+
     guild_id = ctx.guild.id
+    
+    # Dọn dẹp danh sách hàng chờ
     if guild_id in music_queues:
         music_queues[guild_id].clear()
         
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.stop()
-        await ctx.send("*ôm lấy tay cậu* Đã tắt nhạc rồi nè!")
-    else:
-        await ctx.send("*ngơ ngác* Tớ đâu có mở nhạc đâu nhỉ?")
+    if guild_id in last_played_track:
+        cleanup_file(last_played_track[guild_id])
+        del last_played_track[guild_id]
+
+    # Dừng phát nhạc và ngắt kết nối voice channel ngay lập tức
+    if ctx.voice_client:
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+        await ctx.voice_client.disconnect()
+
+    embed = create_sayori_embed("⏹️ Dừng phát & Rời phòng", "*ôm lấy tay cậu* Tớ đã dừng nhạc, dọn dẹp hàng chờ và rời phòng thoại rồi nha! 👋☀️")
+    await ctx.send(embed=embed)
 
 @sayori_bot.command(name='leave', aliases=['dira'])
 async def leave_vc(ctx):
+    if not await check_same_voice_channel(ctx):
+        return
+
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
-        await ctx.send("*vẫy tay* Tớ ra ngoài trước nha! 👋☀️")
-    else:
-        await ctx.send("*cười xòe* Tớ đâu có ở trong phòng thoại nào đâu nè!")
+        embed = create_sayori_embed("👋 Tạm biệt", "*vẫy tay* Tớ ra ngoài trước nha! Khi nào cần nghe nhạc lại gọi tớ `!Splay` nhé! ☀️")
+        await ctx.send(embed=embed)
 
 # --- 7. Khởi chạy Server & Bot ---
 if __name__ == '__main__':
